@@ -6,11 +6,16 @@ import org.jspecify.annotations.NonNull;
 /**
  * Represents an OpenStreetMap node with relevant Point of Sale information.
  * This is the domain model for OSM data before it is converted to a POS object.
- *
- * @param nodeId The OpenStreetMap node ID.
  */
 @Builder
-public record OsmNode(@NonNull Long nodeId) {
-    // TODO: The OsmNode record currently only contains the node ID, but should be extended to include
-    //  all relevant fields for POS objects.
-}
+public record OsmNode(
+        @NonNull Long nodeId,
+        String name,
+        String amenity,
+        String street,
+        String houseNumber,
+        String postalCode,
+        String city,
+        Double latitude,
+        Double longitude
+) {}

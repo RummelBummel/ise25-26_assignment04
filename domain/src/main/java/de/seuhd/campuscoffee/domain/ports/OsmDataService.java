@@ -6,16 +6,16 @@ import org.jspecify.annotations.NonNull;
 
 /**
  * Port for importing Point of Sale data from OpenStreetMap.
- * This interface defines the contract for fetching OSM node data.
- * Implementations should handle the external API communication.
+ * Defines how to fetch and parse OSM node data from the external OSM API.
  */
 public interface OsmDataService {
+
     /**
-     * Fetches an OpenStreetMap node by its ID.
+     * Fetches an OpenStreetMap node by its ID and returns its parsed domain model.
      *
-     * @param nodeId the OpenStreetMap node ID to fetch
-     * @return the OSM node data with tags
-     * @throws OsmNodeNotFoundException if the node doesn't exist or can't be fetched
+     * @param nodeId The OpenStreetMap node ID.
+     * @return The parsed OsmNode with relevant tags and coordinates.
+     * @throws OsmNodeNotFoundException if the node could not be retrieved or parsed.
      */
     @NonNull OsmNode fetchNode(@NonNull Long nodeId) throws OsmNodeNotFoundException;
 }

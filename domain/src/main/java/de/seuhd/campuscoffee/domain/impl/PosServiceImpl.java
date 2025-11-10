@@ -3,120 +3,153 @@ package de.seuhd.campuscoffee.domain.impl;
 import de.seuhd.campuscoffee.domain.exceptions.DuplicatePosNameException;
 import de.seuhd.campuscoffee.domain.exceptions.OsmNodeMissingFieldsException;
 import de.seuhd.campuscoffee.domain.exceptions.OsmNodeNotFoundException;
-import de.seuhd.campuscoffee.domain.model.CampusType;
+import de.seuhd.campuscoffee.domain.exceptions.PosNotFoundException;
+import de.seuhd.campuscoffee.domain.model.Address;
+import de.seuhd.campuscoffee.domain.model.Campus;
 import de.seuhd.campuscoffee.domain.model.OsmNode;
 import de.seuhd.campuscoffee.domain.model.Pos;
-import de.seuhd.campuscoffee.domain.exceptions.PosNotFoundException;
 import de.seuhd.campuscoffee.domain.model.PosType;
 import de.seuhd.campuscoffee.domain.ports.OsmDataService;
 import de.seuhd.campuscoffee.domain.ports.PosDataService;
 import de.seuhd.campuscoffee.domain.ports.PosService;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
- * Implementation of the POS service that handles business logic related to POS entities.
+ * Default implementation of the PosService port.
+ * Orchestrates business logic for POS operations and delegates
+ * persistence concerns to {@link PosDataService} and OSM access to {@link OsmDataService}.
  */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class PosServiceImpl implements PosService {
+
     private final PosDataService posDataService;
     private final OsmDataService osmDataService;
 
     @Override
     public void clear() {
-        log.warn("Clearing all POS data");
         posDataService.clear();
     }
 
     @Override
     public @NonNull List<Pos> getAll() {
-        log.debug("Retrieving all POS");
         return posDataService.getAll();
     }
 
     @Override
     public @NonNull Pos getById(@NonNull Long id) throws PosNotFoundException {
-        log.debug("Retrieving POS with ID: {}", id);
         return posDataService.getById(id);
     }
 
     @Override
-    public @NonNull Pos upsert(@NonNull Pos pos) throws PosNotFoundException {
-        if (pos.id() == null) {
-            // Create new POS
-            log.info("Creating new POS: {}", pos.name());
-            return performUpsert(pos);
-        } else {
-            // Update existing POS
-            log.info("Updating POS with ID: {}", pos.id());
-            // POS ID must be set
-            Objects.requireNonNull(pos.id());
-            // POS must exist in the database before the update
-            posDataService.getById(pos.id());
-            return performUpsert(pos);
-        }
+    public @NonNull Pos upsert(@NonNull Pos pos)
+            throws PosNotFoundException, DuplicatePosNameException {
+        return posDataService.upsert(pos);
     }
 
     @Override
-    public @NonNull Pos importFromOsmNode(@NonNull Long nodeId) throws OsmNodeNotFoundException {
-        log.info("Importing POS from OpenStreetMap node {}...", nodeId);
+    public @NonNull Pos importFromOsmNode(@NonNull Long nodeId)
+            throws OsmNodeNotFoundException, OsmNodeMissingFieldsException, DuplicatePosNameException {
 
-        // Fetch the OSM node data using the port
+        // 1. OSM-Node laden (kann OsmNodeNotFoundException werfen)
         OsmNode osmNode = osmDataService.fetchNode(nodeId);
 
-        // Convert OSM node to POS domain object and upsert it
-        // TODO: Implement the actual conversion (the response is currently hard-coded).
-        Pos savedPos = upsert(convertOsmNodeToPos(osmNode));
-        log.info("Successfully imported POS '{}' from OSM node {}", savedPos.name(), nodeId);
+        // 2. Pflichtfelder prüfen
+        validateRequiredOsmFields(osmNode);
 
-        return savedPos;
+        // 3. OSM → POS mappen
+        Pos pos = mapOsmNodeToPos(osmNode);
+
+        // 4. Persistieren via upsert (kann DuplicatePosNameException werfen)
+        return posDataService.upsert(pos);
     }
 
     /**
-     * Converts an OSM node to a POS domain object.
-     * Note: This is a stub implementation and should be replaced with real mapping logic.
-     */
-    private @NonNull Pos convertOsmNodeToPos(@NonNull OsmNode osmNode) {
-        if (osmNode.nodeId().equals(5589879349L)) {
-            return Pos.builder()
-                    .name("Rada Coffee & Rösterei")
-                    .description("Caffé und Rösterei")
-                    .type(PosType.CAFE)
-                    .campus(CampusType.ALTSTADT)
-                    .street("Untere Straße")
-                    .houseNumber("21")
-                    .postalCode(69117)
-                    .city("Heidelberg")
-                    .build();
-        } else {
-            throw new OsmNodeMissingFieldsException(osmNode.nodeId());
-        }
-    }
-
-    /**
-     * Performs the actual upsert operation with consistent error handling and logging.
-     * Database constraint enforces name uniqueness - data layer will throw DuplicatePosNameException if violated.
-     * JPA lifecycle callbacks (@PrePersist/@PreUpdate) set timestamps automatically.
+     * Validates that the OSM node contains all required fields for a valid POS.
      *
-     * @param pos the POS to upsert
-     * @return the persisted POS with updated ID and timestamps
-     * @throws DuplicatePosNameException if a POS with the same name already exists
+     * @param osmNode the OSM node data
+     * @throws OsmNodeMissingFieldsException if any required field is missing or blank
      */
-    private @NonNull Pos performUpsert(@NonNull Pos pos) throws DuplicatePosNameException {
-        try {
-            Pos upsertedPos = posDataService.upsert(pos);
-            log.info("Successfully upserted POS with ID: {}", upsertedPos.id());
-            return upsertedPos;
-        } catch (DuplicatePosNameException e) {
-            log.error("Error upserting POS '{}': {}", pos.name(), e.getMessage());
-            throw e;
+    private void validateRequiredOsmFields(OsmNode osmNode) throws OsmNodeMissingFieldsException {
+        StringBuilder missing = new StringBuilder();
+
+        if (isBlank(osmNode.name())) {
+            missing.append("name, ");
         }
+        if (isBlank(osmNode.amenity())) {
+            missing.append("amenity, ");
+        }
+        if (isBlank(osmNode.street())) {
+            missing.append("addr:street, ");
+        }
+        if (isBlank(osmNode.houseNumber())) {
+            missing.append("addr:housenumber, ");
+        }
+        if (isBlank(osmNode.postalCode())) {
+            missing.append("addr:postcode, ");
+        }
+        if (isBlank(osmNode.city())) {
+            missing.append("addr:city, ");
+        }
+        if (osmNode.latitude() == null || osmNode.longitude() == null) {
+            missing.append("lat/lon, ");
+        }
+
+        if (missing.length() > 0) {
+            // letztes Komma/Leerzeichen entfernen
+            String missingFields = missing.substring(0, missing.length() - 2);
+            throw new OsmNodeMissingFieldsException(
+                    "OSM node " + osmNode.nodeId() +
+                            " is missing required fields: " + missingFields
+            );
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * Maps an OsmNode to a Pos domain object.
+     * This encapsulates the mapping heuristic described in AGENTS.md.
+     */
+    private Pos mapOsmNodeToPos(OsmNode osmNode) {
+        // ⚠️ Falls deine Address-Klasse anders gebaut wird, hier anpassen.
+        Address address = Address.builder()
+                .street(osmNode.street())
+                .houseNumber(osmNode.houseNumber())
+                .postalCode(osmNode.postalCode())
+                .city(osmNode.city())
+                .build();
+
+        // ⚠️ Falls Pos kein Builder hat, sondern z.B. Konstruktor, entsprechend ändern.
+        return Pos.builder()
+                .name(osmNode.name())
+                .type(mapAmenityToPosType(osmNode.amenity()))
+                .address(address)
+                .latitude(osmNode.latitude())
+                .longitude(osmNode.longitude())
+                // Campus-Heuristik: Default ALTSTADT, siehe AGENTS.md
+                .campus(Campus.ALTSTADT)
+                .build();
+    }
+
+    /**
+     * Maps OSM amenity tag to the internal PosType enum.
+     */
+    private PosType mapAmenityToPosType(String amenity) {
+        if (amenity == null) {
+            return PosType.OTHER;
+        }
+        return switch (amenity.toLowerCase()) {
+            case "cafe" -> PosType.CAFE;
+            case "restaurant" -> PosType.RESTAURANT;
+            case "fast_food" -> PosType.RESTAURANT;
+            default -> PosType.OTHER;
+        };
     }
 }
